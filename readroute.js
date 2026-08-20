@@ -1,3 +1,63 @@
+const { ObjectId } = require("bson");
+
+const SUPPORTED_QUERY_OPERATORS = new Set([
+    "eq",
+    "ne",
+    "gt",
+    "gte",
+    "lt",
+    "lte",
+    "in",
+    "nin",
+    "exists",
+]);
+
+function escapeRegex(value) {
+    return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function validateFieldPath(path) {
+    if (typeof path !== "string" || !/^[A-Za-z0-9_.]+$/.test(path)) {
+        throw new TypeError("Invalid filter field path");
+    }
+    return path;
+}
+
+function parseFilterValue(value) {
+    let normalizedValue = String(value);
+    let betweenMatch = normalizedValue.match(/:BTW:/i);
+    if (betweenMatch) {
+        let separatorIndex = betweenMatch.index;
+        return {
+            value: normalizedValue.slice(0, separatorIndex),
+            operator: "BTW",
+            endValue: normalizedValue.slice(separatorIndex + betweenMatch[0].length),
+        };
+    }
+
+    let operatorMatch = normalizedValue.match(
+        /:(GTE|LTE|EQ|LT|GT|CUS|IN|NIN|NE|EXISTS)$/i
+    );
+    if (!operatorMatch) return { value: normalizedValue, operator: "EQ" };
+
+    return {
+        value: normalizedValue.slice(0, operatorMatch.index),
+        operator: operatorMatch[1].toUpperCase(),
+    };
+}
+
+function parseJsonArray(value, fieldName) {
+    let parsedValue = JSON.parse(value);
+    if (!Array.isArray(parsedValue)) {
+        throw new TypeError(`${fieldName} must be a JSON array`);
+    }
+    return parsedValue;
+}
+
+function constructCustomDateSearchValue(fieldPath, dateValue) {
+    return escapeRegex(dateValue);
+}
+
 let fieldSpecificFilters = {
     EXACTMATCH: function (fieldPath, fieldValue) {
         return {
@@ -22,14 +82,14 @@ let fieldSpecificFilters = {
                         return {
                             [`${fieldPath}.${e.name.split(".")[e.name.split(".").length - 1]
                                 }`]: {
-                                $regex: fieldValue,
+                                $regex: escapeRegex(fieldValue),
                                 $options: "i",
                             },
                         };
                     } else {
                         return {
                             [`${fieldPath}.${e.name}`]: {
-                                $regex: fieldValue,
+                                $regex: escapeRegex(fieldValue),
                                 $options: "i",
                             },
                         };
@@ -47,7 +107,7 @@ let fieldSpecificFilters = {
             } else {
                 return {
                     [fieldPath]: {
-                        $regex: fieldValue,
+                        $regex: escapeRegex(fieldValue),
                         $options: "i",
                     },
                 };
@@ -55,12 +115,13 @@ let fieldSpecificFilters = {
         }
     },
     DATE: function (fieldPath, fieldValue) {
+        let parsedFilter = parseFilterValue(fieldValue);
         let operator = getOperator(fieldValue);
-        let dateValue = fieldValue.split(":")[0];
+        let dateValue = parsedFilter.value;
         if (operator === "$eq") {
             return {
                 [fieldPath]: {
-                    $regex: dateValue,
+                    $regex: escapeRegex(dateValue),
                     $options: "i",
                 },
             };
@@ -72,7 +133,7 @@ let fieldSpecificFilters = {
                 },
             };
         } else if (operator === "$btw") {
-            let endDateValue = fieldValue.split(":")[2];
+            let endDateValue = parsedFilter.endValue;
             return {
                 [fieldPath]: {
                     $gte: new Date(dateValue).toISOString(),
@@ -88,17 +149,18 @@ let fieldSpecificFilters = {
         }
     },
     DATETIME: function (fieldPath, fieldValue) {
+        let parsedFilter = parseFilterValue(fieldValue);
         let operator = getOperator(fieldValue);
-        let dateTimeValue = fieldValue.split(":")[0];
+        let dateTimeValue = parsedFilter.value;
         if (operator === "$eq") {
             return {
                 [fieldPath]: {
-                    $regex: dateTimeValue,
+                    $regex: escapeRegex(dateTimeValue),
                     $options: "i",
                 },
             };
         } else if (operator === "$btw") {
-            let endDateTimeValue = fieldValue.split(":")[2];
+            let endDateTimeValue = parsedFilter.endValue;
             return {
                 [fieldPath]: {
                     $gte: new Date(dateTimeValue).toISOString(),
@@ -117,10 +179,14 @@ let fieldSpecificFilters = {
     ORDER: function (fieldPath, fieldValue) { },
     NUMBER: function (fieldPath, fieldValue) {
         let operator = getOperator(fieldValue);
-        fieldValue = fieldValue.split(":")[0];
+        fieldValue = parseFilterValue(fieldValue).value;
+        let numericValue = Number(fieldValue);
+        if (!Number.isFinite(numericValue)) {
+            throw new TypeError("Invalid numeric filter value");
+        }
         return {
             [fieldPath]: {
-                [`${operator}`]: parseInt(fieldValue),
+                [`${operator}`]: numericValue,
             },
         };
     },
@@ -136,13 +202,13 @@ let fieldSpecificFilters = {
                 $or: [
                     {
                         [`${fieldPath}.${name}.id`]: {
-                            $regex: fieldValue,
+                            $regex: escapeRegex(fieldValue),
                             $options: "i",
                         },
                     },
                     {
                         [`${fieldPath}.${child.name}.id`]: {
-                            $regex: fieldValue,
+                            $regex: escapeRegex(fieldValue),
                             $options: "i",
                         },
                     },
@@ -152,7 +218,7 @@ let fieldSpecificFilters = {
             //handle for multiple Value
             return {
                 [`${fieldPath}.id`]: {
-                    $regex: fieldValue,
+                    $regex: escapeRegex(fieldValue),
                     $options: "i",
                 },
             };
@@ -162,7 +228,7 @@ let fieldSpecificFilters = {
         fieldPath = `${fieldPath}.phoneNumber`;
         return {
             [fieldPath]: {
-                $regex: fieldValue,
+                $regex: escapeRegex(fieldValue),
                 $options: "i",
             },
         };
@@ -176,13 +242,13 @@ let fieldSpecificFilters = {
                 $or: [
                     {
                         [`${fieldPath}.${name}.text`]: {
-                            $regex: fieldValue,
+                            $regex: escapeRegex(fieldValue),
                             $options: "i",
                         },
                     },
                     {
                         [`${fieldPath}.${child.name}.text`]: {
-                            $regex: fieldValue,
+                            $regex: escapeRegex(fieldValue),
                             $options: "i",
                         },
                     },
@@ -192,7 +258,7 @@ let fieldSpecificFilters = {
             //handle for multiple Value
             return {
                 [`${fieldPath}.text`]: {
-                    $regex: fieldValue,
+                    $regex: escapeRegex(fieldValue),
                     $options: "i",
                 },
             };
@@ -200,7 +266,9 @@ let fieldSpecificFilters = {
     },
     RADIO: function (fieldPath, fieldValue, fieldDef) {
         let { values } = fieldDef;
-        fieldValue = values.find((e) => e.title === fieldValue).value;
+        let selectedValue = values.find((e) => e.title === fieldValue);
+        if (!selectedValue) throw new TypeError("Invalid radio filter value");
+        fieldValue = selectedValue.value;
         return {
             [fieldPath]: fieldValue,
         };
@@ -215,7 +283,7 @@ let fieldSpecificFilters = {
             "false",
         ].includes(fieldValue);
         return {
-            [fieldPath]: isBoolean ? JSON.parse(fieldValue) : fieldValue,
+            [fieldPath]: isBoolean ? fieldValue.toLowerCase() === "true" : fieldValue,
         };
     },
     GEOFENCE: function (fieldPath, fieldValue) { },
@@ -228,7 +296,7 @@ let fieldSpecificFilters = {
             $or: fields.map((field) => {
                 return {
                     [`${fieldPath}.${field.name}`]: {
-                        $regex: `.*${fieldValue}.*`,
+                        $regex: escapeRegex(fieldValue),
                         $options: "i",
                     },
                 };
@@ -252,7 +320,7 @@ let fieldSpecificFilters = {
             } else {
                 return {
                     [fieldPath]: {
-                        $regex: fieldValue,
+                        $regex: escapeRegex(fieldValue),
                         $options: "i",
                     },
                 };
@@ -342,7 +410,7 @@ function constructGlobalSearchQuery({
                             } else {
                                 globalQuery["$or"].push({
                                     [`sys_entityAttributes.${name}.${refFieldName}`]: {
-                                        $regex: `.*${value}.*`,
+                                        $regex: escapeRegex(value),
                                         $options: "i",
                                     },
                                 });
@@ -356,7 +424,7 @@ function constructGlobalSearchQuery({
                             } else {
                                 globalQuery["$or"].push({
                                     [`sys_entityAttributes.${fieldDef.name}.${refDef.name}`]: {
-                                        $regex: `.*${value}.*`,
+                                        $regex: escapeRegex(value),
                                         $options: "i",
                                     },
                                 });
@@ -367,7 +435,7 @@ function constructGlobalSearchQuery({
                     ["startDate", "endDate"].map((e) => {
                         globalQuery["$or"].push({
                             [`sys_entityAttributes.${fieldDef.name}.${e}`]: {
-                                $regex: `.*${value}.*`,
+                                $regex: escapeRegex(value),
                                 $options: "i",
                             },
                         });
@@ -383,7 +451,7 @@ function constructGlobalSearchQuery({
                     arr.map((e) => {
                         globalQuery["$or"].push({
                             [`sys_entityAttributes.${fieldDef.name}.${e}.${path}`]: {
-                                $regex: `.*${value}.*`,
+                                $regex: escapeRegex(value),
                                 $options: "i",
                             },
                         });
@@ -391,7 +459,7 @@ function constructGlobalSearchQuery({
                 } else if (fieldDef.type === "PHONENUMBER") {
                     globalQuery["$or"].push({
                         [`sys_entityAttributes.${fieldDef.name}.phoneNumber`]: {
-                            $regex: `.*${value}.*`,
+                            $regex: escapeRegex(value),
                             $options: "i",
                         },
                     });
@@ -400,7 +468,7 @@ function constructGlobalSearchQuery({
                         fieldDef.fields.map((orderfield) => {
                             globalQuery["$or"].push({
                                 [`sys_entityAttributes.${fieldDef.name}.${orderfield.name}`]: {
-                                    $regex: `.*${value}`,
+                                    $regex: escapeRegex(value),
                                     $options: "i",
                                 },
                             });
@@ -414,7 +482,7 @@ function constructGlobalSearchQuery({
                     fields.map((field) => {
                         globalQuery["$or"].push({
                             [`sys_entityAttributes.${fieldDef.name}.${field.name}`]: {
-                                $regex: `.*${value}.*`,
+                                $regex: escapeRegex(value),
                                 $options: "i",
                             },
                         });
@@ -422,7 +490,7 @@ function constructGlobalSearchQuery({
                 } else {
                     globalQuery["$or"].push({
                         [`sys_entityAttributes.${fieldDef.name}`]: {
-                            $regex: `.*${value}.*`,
+                            $regex: escapeRegex(value),
                             $options: "i",
                         },
                     });
@@ -453,17 +521,19 @@ function constructFilters(params, template, globalTemplate = {}) {
             },
         ];
 
-        let { sys_topLevel } = template.sys_entityAttributes;
-        let { config } = globalTemplate ? globalTemplate.sys_entityAttributes : {};
+        let { sys_topLevel = [] } = template.sys_entityAttributes || {};
+        let { config = {} } = globalTemplate.sys_entityAttributes || {};
 
         let finalQuery = [],
             filterObj,
-            isCoreKey,
             fieldPath;
 
         //Still need to handle for nested objects
         if (Object.keys(params).length) {
-            Object.keys(params).map((filterKey) => {
+            Object.keys(params)
+                .filter((filterKey) => !["startDate", "endDate"].includes(filterKey))
+                .map((filterKey) => {
+                validateFieldPath(filterKey);
                 let coreKeyIndex = coreKeys.findIndex((e) => e[filterKey]);
                 if (coreKeyIndex != -1) {
                     fieldPath = coreKeys[coreKeyIndex][filterKey];
@@ -476,7 +546,7 @@ function constructFilters(params, template, globalTemplate = {}) {
 
                 if (fieldDef) {
                     if (
-                        config &&
+                        Array.isArray(config.columnFilters) &&
                         config.columnFilters.find((field) => fieldDef.type === field.type)
                     ) {
                         filterObj = fieldSpecificFilters["EXACTMATCH"](
@@ -494,7 +564,7 @@ function constructFilters(params, template, globalTemplate = {}) {
                         } else {
                             finalQuery.push({
                                 [fieldPath]: {
-                                    $regex: fieldValue,
+                                    $regex: escapeRegex(fieldValue),
                                     $options: "i",
                                 },
                             });
@@ -504,18 +574,16 @@ function constructFilters(params, template, globalTemplate = {}) {
                     //Fields without definitions in the template
                     if (filterKey === "sys_ids") {
                         //Convert _id to ObejctIDs
-                        fieldValue = JSON.parse(fieldValue);
-                        console.log("fieldValue", fieldValue);
+                        fieldValue = parseJsonArray(fieldValue, "sys_ids");
                         if (fieldValue.length) {
                             finalQuery.push({
                                 _id: {
-                                    $in: fieldValue.map((e) => new ObjectId(e)),
+                                    $in: fieldValue.map((e) => ObjectId.createFromHexString(e)),
                                 },
                             });
                         }
                     } else if (filterKey === "sys_gUids") {
-                        fieldValue = JSON.parse(fieldValue);
-                        console.log("fieldValue", fieldValue);
+                        fieldValue = parseJsonArray(fieldValue, "sys_gUids");
                         if (fieldValue.length) {
                             finalQuery.push({
                                 sys_gUid: {
@@ -524,9 +592,10 @@ function constructFilters(params, template, globalTemplate = {}) {
                             });
                         }
                     } else if (filterKey === "_notExists") {
-                        fieldValue = JSON.parse(fieldValue);
+                        fieldValue = parseJsonArray(fieldValue, "_notExists");
                         if (fieldValue.length) {
                             fieldValue.forEach((path) => {
+                                validateFieldPath(path);
                                 finalQuery.push({
                                     [path]: {
                                         $exists: false,
@@ -547,7 +616,7 @@ function constructFilters(params, template, globalTemplate = {}) {
                             });
                         }
                         if (eventFields.length > 0) {
-                            let { startDate, endDate } = request.query;
+                            let { startDate, endDate } = params;
                             let currentDate = new Date();
 
                             startDate =
@@ -572,13 +641,13 @@ function constructFilters(params, template, globalTemplate = {}) {
                                         );
                                         if (field) {
                                             let fieldPath = `sys_entityAttributes.${field.name}`;
-                                            let existingQueryIndex = finalQuery["$and"].findIndex(
+                                            let existingQueryIndex = finalQuery.findIndex(
                                                 (e) => e.hasOwnProperty(fieldPath)
                                             );
                                             if (existingQueryIndex >= 0)
-                                                finalQuery["$and"].splice(existingQueryIndex, 1);
+                                                finalQuery.splice(existingQueryIndex, 1);
                                             if (key === "startDate") {
-                                                finalQuery["$and"].push({
+                                                finalQuery.push({
                                                     [fieldPath]:
                                                         field.type === "DATERANGE"
                                                             ? {
@@ -596,7 +665,7 @@ function constructFilters(params, template, globalTemplate = {}) {
                             });
                         }
                     } else if (filterKey === "geoFenceSearch") {
-                        fieldValue = JSON.parse(fieldValue);
+                        fieldValue = parseJsonArray(fieldValue, "geoFenceSearch");
                         let filterMetadata =
                             template.sys_entityAttributes.sys_filterFields.find(
                                 (e) => e.name === "geoFenceSearch"
@@ -634,30 +703,39 @@ function constructFilters(params, template, globalTemplate = {}) {
                             });
                         }
                     } else {
-                        let operator = fieldValue.split(":")[1]
-                            ? fieldValue.split(":")[1].toLowerCase()
-                            : "eq";
-                        fieldValue = fieldValue.split(":")[0];
+                        // Parsed the same way as the typed handlers above. A bare
+                        // `split(":")` breaks any value that legitimately contains
+                        // a colon — an ISO timestamp being the obvious one — by
+                        // reading part of the value as the operator.
+                        let parsedFilter = parseFilterValue(fieldValue);
+                        let operator = parsedFilter.operator.toLowerCase();
+                        fieldValue = parsedFilter.value;
+
+                        // An unrecognised suffix is not an operator, so the whole
+                        // string stays a literal value. Only the fixed set below
+                        // can ever reach Mongo as `$<operator>`.
+                        if (!SUPPORTED_QUERY_OPERATORS.has(operator)) {
+                            throw new TypeError("Unsupported filter operator");
+                        }
 
                         const multiValueOperators = ["in", "nin"];
-
-                        console.log("operator", { operator, fieldValue, fieldPath });
+                        let operatorValue = multiValueOperators.includes(operator)
+                            ? fieldValue.split(",")
+                            : operator === "exists"
+                                ? fieldValue.toLowerCase() === "true"
+                                : fieldValue;
                         finalQuery.push({
                             [fieldPath]: {
-                                [`$${operator}`]: multiValueOperators.includes(operator)
-                                    ? fieldValue.split(",")
-                                    : fieldValue,
+                                [`$${operator}`]: operatorValue,
                             },
                         });
 
                     }
-                    console.log(`Field definition does not exist ${fieldName}`);
                 }
             });
         }
         return finalQuery;
     } catch (e) {
-        console.error("Error reported in construct filters", e);
         throw e;
     }
 }
@@ -678,7 +756,7 @@ function getSearchKeys(params) {
     ];
     let extractedParams = { ...params };
     nonSearchKeys.map((key) => {
-        if (Object.keys(extractedParams).indexOf(key !== -1)) {
+        if (Object.prototype.hasOwnProperty.call(extractedParams, key)) {
             delete extractedParams[key];
         }
     });
@@ -711,7 +789,6 @@ function constructOrgFilters(orgFilterProps) {
             } else return [];
         } else return [];
     } catch (e) {
-        console.log("Error in constructOrgFilters ", e);
         return [];
     }
 }
@@ -734,7 +811,7 @@ const checkAccess = (checkAccessProps) => {
             }
         }
     } catch (e) {
-        console.log("Error in checkAccess ", e);
+        return false;
     }
 };
 
@@ -751,8 +828,18 @@ function getPermittedEntities(roleData) {
         });
         return permittedEntities;
     } catch (e) {
-        console.log("Error in getPermittedEntities ", e);
+        return [];
     }
+}
+
+function constructDenyAllFilters() {
+    return [
+        {
+            _id: {
+                $in: [],
+            },
+        },
+    ];
 }
 
 function constructPermittedEntitiesFilters(props) {
@@ -761,7 +848,6 @@ function constructPermittedEntitiesFilters(props) {
             props || {};
         let { roleName = {} } = user?.sys_entityAttributes || {};
         let { agencyPermission = {} } = agency?.sys_entityAttributes || {};
-        let permittedEntitiesFilters = [];
 
         if (roleName?.sys_gUid) {
             // let [rError, roleData] = await entityModel.getOneData('role', { sys_gUid: roleName?.sys_gUid });
@@ -786,8 +872,7 @@ function constructPermittedEntitiesFilters(props) {
             });
 
             if (roleLevelAccess && agencyLevelAccess) {
-                permittedEntitiesFilters = constructPermittedEntitiesFilters(roleData);
-                let permittedEntities = getPermittedEntities(roleData);
+                let permittedEntities = getPermittedEntities(roleData) || [];
                 return permittedEntities.length
                     ? [
                         {
@@ -796,12 +881,11 @@ function constructPermittedEntitiesFilters(props) {
                             },
                         },
                     ]
-                    : [];
-            } else return [];
+                    : constructDenyAllFilters();
+            } else return constructDenyAllFilters();
         } else return [];
     } catch (e) {
-        console.log("Error in constructPermittedEntitiesFilters ", e);
-        return [];
+        return constructDenyAllFilters();
     }
 }
 
@@ -820,7 +904,6 @@ function checkEligibleForEntityBuilder(props) {
             return true;
         } else return false;
     } catch (e) {
-        console.log("error in checkEligibleForEntityBuilder :", e);
         return false;
     }
 }
@@ -855,7 +938,8 @@ function constructEntityBuilderFilters(props) {
                 permissionSource = roleData?.sys_entityAttributes?.rolePermission || {};
             }
 
-            permissionSource.apps.map((eachApp) => {
+            let permissionApps = permissionSource.apps || [];
+            permissionApps.map((eachApp) => {
                 eachApp.modules.map((eachModule) => {
                     eachModule.entities.map((eachEntity) => {
                         if (eachEntity?.featureAccess?.disableMetaDataEditor !== true) {
@@ -873,32 +957,34 @@ function constructEntityBuilderFilters(props) {
                         },
                     },
                 ]
-                : [];
+                : constructDenyAllFilters();
         } else return [];
     } catch (e) {
-        console.error("error in constructEntityBuilderFilters :", e);
-        return [];
+        return constructDenyAllFilters();
     }
 }
 
 function constructFinalQuery(queryStages) {
-    //Handle errors
-    let finalQueryParameters = JSON.parse(JSON.stringify(queryStages));
     let {
-        finalMatchQuery,
-        globalSearchQuery,
-        agencyFilters,
-        heirarchyFilters,
-        orgFilters,
-        permittedEntitiesFilters,
-        skip,
-        limit,
+        finalMatchQuery = [],
+        globalSearchQuery = [],
+        agencyFilters = [],
+        heirarchyFilters = [],
+        orgFilters = [],
+        permittedEntitiesFilters = [],
+        skip = 0,
+        limit = 25,
         sortby,
         orderby,
-        entityBuilderFilters,
-    } = finalQueryParameters;
+        entityBuilderFilters = [],
+    } = queryStages || {};
     let dataQueryStages = [],
         countQueryStages = [];
+
+    skip = Number(skip);
+    limit = Number(limit);
+    if (!Number.isInteger(skip) || skip < 0) throw new TypeError("Invalid skip value");
+    if (!Number.isInteger(limit) || limit < 1) throw new TypeError("Invalid limit value");
 
     let isHeirarchyFiltersApplied = heirarchyFilters && heirarchyFilters.length;
     let isEntityBuilderFiltersApplied =
@@ -920,15 +1006,19 @@ function constructFinalQuery(queryStages) {
         },
     };
 
-    if (finalMatchQuery.length || agencyFilters.length) {
+    let hasMatchFilters = match.$match.$and.length > 0;
+    if (hasMatchFilters) {
         dataQueryStages.push(match);
         countQueryStages.push(match, { $count: "total_count" });
     } else {
         countQueryStages.push({ $count: "total_count" });
     }
 
-    let sortBy = sortby ? `sys_entityAttributes.${sortby}` : "_id";
+    let sortBy = sortby
+        ? `sys_entityAttributes.${validateFieldPath(sortby)}`
+        : "_id";
     let orderBy = orderby ? parseInt(orderby) : -1;
+    if (![1, -1].includes(orderBy)) throw new TypeError("Invalid sort order");
 
     dataQueryStages = [
         ...dataQueryStages,
@@ -967,7 +1057,7 @@ function getOperator(value) {
         NE: "$ne",
     };
 
-    const op = value.split(":")[1];
+    const op = parseFilterValue(value).operator;
 
     return operator[op] || "$eq";
 }

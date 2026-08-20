@@ -50,36 +50,7 @@
  * Structured JSON on stdout is the entire contract Fluent Bit needs.
  */
 
-/**
- * ---------------------------------------------------------------------------
- * NODE 11 COMPATIBILITY — READ BEFORE ADDING MODERN SYNTAX
- * ---------------------------------------------------------------------------
- * Twelve services in this platform still build on `node:11-alpine`
- * (heirarchy, napi, triggers, notification, publicapi, iotapi, and others).
- * This file is loaded by every one of them, so it must parse and run on
- * Node 11.
- *
- * That rules out, at minimum:
- *   - `??` nullish coalescing        (Node 14+)  — a SYNTAX error, so the
- *                                                  service will not even start
- *   - `?.` optional chaining         (Node 14+)  — same
- *   - `crypto.randomUUID()`          (Node 14.17+)
- *   - `Object.fromEntries`           (Node 12+)
- *   - `String.prototype.matchAll`    (Node 12+)
- *   - `AsyncLocalStorage`            (Node 12.17+) — see below
- *
- * A syntax error here does not degrade one feature; it stops the service
- * booting at all. Do not add newer syntax without checking every Dockerfile.
- *
- * The real fix is upgrading those base images — Node 11 went end-of-life in
- * 2019 and is a standing security exposure on a system handling PHI. Until
- * that happens, this file is written to the old floor.
- */
-
-// AsyncLocalStorage arrived in Node 12.17. On Node 11 this is `undefined`,
-// which is handled rather than thrown: the logger still emits correctly, it
-// just cannot propagate a correlation ID implicitly. Those services must pass
-// identifiers explicitly until their base image is upgraded.
+/** Node 20.19+ is required by package.json and provides AsyncLocalStorage. */
 const AsyncLocalStorage = require('async_hooks').AsyncLocalStorage;
 
 // ---------------------------------------------------------------------------
@@ -109,6 +80,22 @@ const MAX_STRING_LENGTH = Number(process.env.LOG_MAX_STRING_LENGTH || 200);
 const MAX_STACK_LENGTH = Number(process.env.LOG_MAX_STACK_LENGTH || 2000);
 const MAX_MESSAGE_LENGTH = Number(process.env.LOG_MAX_MESSAGE_LENGTH || 160);
 const MAX_CONTEXT_KEYS = 25;
+
+const MESSAGE_REDACTIONS = [
+    [/\b[\w.%+-]+@[\w.-]+\.[A-Za-z]{2,}\b/g, '[REDACTED_EMAIL]'],
+    [/\b\d{3}-\d{2}-\d{4}\b/g, '[REDACTED_SSN]'],
+    [/(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]\d{3}[-.\s]\d{4}/g, '[REDACTED_PHONE]'],
+    [/\b(?:\d{1,3}\.){3}\d{1,3}\b/g, '[REDACTED_IP]'],
+    [/\b(?:bearer|basic)\s+[A-Za-z0-9._~+/=-]+/gi, '[REDACTED_AUTH]'],
+];
+
+function sanitizeMessage(message) {
+    let safeMessage = typeof message === 'string' ? message : String(message);
+    for (const redaction of MESSAGE_REDACTIONS) {
+        safeMessage = safeMessage.replace(redaction[0], redaction[1]);
+    }
+    return safeMessage.replace(/[\r\n\t]+/g, ' ');
+}
 
 // ---------------------------------------------------------------------------
 // The allow-list
@@ -164,7 +151,7 @@ const SAFE_KEYS = new Set([
 
     // Infrastructure
     'service', 'environment', 'queue', 'topic', 'exchange', 'collection',
-    'database', 'version', 'host', 'port', 'region', 'bucket', 'cronExpression',
+    'database', 'version', 'port', 'region', 'bucket', 'cronExpression',
 
     // Bookkeeping emitted by this package itself (throttle, access sampling,
     // and the legacy-logger shim's unmigrated-call-site marker)
@@ -318,11 +305,6 @@ function sanitizeContext(context) {
 // Correlation IDs
 // ---------------------------------------------------------------------------
 
-// `null` on Node 11, where AsyncLocalStorage does not exist. Everything below
-// degrades to "no implicit correlation ID" rather than throwing — losing
-// request tracing on a handful of legacy services is bad; failing to start
-// them is worse, and losing their logs entirely would defeat the purpose of
-// this pipeline.
 const correlationContext = AsyncLocalStorage ? new AsyncLocalStorage() : null;
 
 /** Whether implicit correlation-ID propagation is available on this runtime. */
@@ -337,8 +319,8 @@ function getCorrelationId() {
 /**
  * Run `fn` with a correlation ID bound to every logger call inside it.
  *
- * On Node 11 there is no async context to bind to, so `fn` is simply invoked.
- * Callers keep working; their log lines just carry no correlationId.
+ * If async context is unavailable, `fn` is invoked without implicit
+ * correlation propagation.
  */
 function runWithCorrelationId(correlationId, fn) {
     if (!correlationContext) return fn();
@@ -362,7 +344,7 @@ const throttleState = new Map();
  * and it costs a thousand times as much.
  */
 function throttleDecision(level, message, now) {
-    const key = level + ' ' + message;
+    const key = level + '\\0' + message;
     const state = throttleState.get(key);
 
     if (!state || now - state.windowStart >= THROTTLE_WINDOW_MS) {
@@ -433,7 +415,7 @@ function createLogger(options) {
         // it is how PHI bypasses the context allow-list entirely, so it is
         // capped as a backstop. The real control is code review plus the CI
         // guardrail; this only bounds the damage.
-        let safeMessage = typeof message === 'string' ? message : String(message);
+        let safeMessage = sanitizeMessage(message);
         if (safeMessage.length > MAX_MESSAGE_LENGTH) {
             safeMessage = safeMessage.slice(0, MAX_MESSAGE_LENGTH) + '…[truncated]';
         }

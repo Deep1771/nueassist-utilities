@@ -35,8 +35,8 @@
  *     the cluster, and its entire information content is "the probe that
  *     already has its own alerting is still passing."
  *
- *   - Successful (2xx/3xx) requests are sampled in prod. Errors, redirects to
- *     auth, slow requests, and anything 4xx/5xx are ALWAYS logged. The lines
+ *   - Successful (2xx/3xx) requests are sampled in prod. Errors, client
+ *     disconnects, slow requests, and anything 4xx/5xx are ALWAYS logged. The lines
  *     that matter during an incident are kept at full fidelity; the ones that
  *     only prove the service is alive are thinned.
  */
@@ -57,15 +57,15 @@ const IS_PROD = ENVIRONMENT === 'prod' || ENVIRONMENT === 'production';
  * Raise it to 1 temporarily during an incident via the env var; no deploy of
  * this file is needed.
  */
-// Written without `??` deliberately: this package must parse on Node 11, where
-// nullish coalescing is a syntax error and would stop the service booting.
-// See the compatibility note at the top of logger.js.
 const RAW_SAMPLE_RATE = process.env.LOG_ACCESS_SAMPLE_RATE;
-const SAMPLE_RATE = Number(
+const CONFIGURED_SAMPLE_RATE = Number(
     RAW_SAMPLE_RATE === undefined || RAW_SAMPLE_RATE === ''
         ? (IS_PROD ? 0.1 : 1)
         : RAW_SAMPLE_RATE
 );
+const SAMPLE_RATE = Number.isFinite(CONFIGURED_SAMPLE_RATE)
+    ? Math.min(1, Math.max(0, CONFIGURED_SAMPLE_RATE))
+    : (IS_PROD ? 0.1 : 1);
 
 /**
  * Requests slower than this are always logged regardless of sampling — a slow
@@ -113,8 +113,11 @@ function createRequestLogger(logger, options) {
     const ignored = new Set(
         DEFAULT_IGNORED_PATHS.concat(opts.ignorePaths || [])
     );
-    const sampleRate = opts.sampleRate !== undefined
-        ? opts.sampleRate
+    const requestedSampleRate = opts.sampleRate !== undefined
+        ? Number(opts.sampleRate)
+        : SAMPLE_RATE;
+    const sampleRate = Number.isFinite(requestedSampleRate)
+        ? Math.min(1, Math.max(0, requestedSampleRate))
         : SAMPLE_RATE;
 
     return function requestLogger(req, res, next) {
@@ -132,12 +135,8 @@ function createRequestLogger(logger, options) {
         res.setHeader(CORRELATION_HEADER, correlationId);
 
         logger.runWithCorrelationId(correlationId, () => {
-            // Probes are dropped before any work is done, but the correlation
-            // context is still established so anything the handler itself logs
-            // remains traceable.
-            if (ignored.has(req.path)) return next();
-
             const startedAt = Date.now();
+            const isIgnoredPath = ignored.has(req.path);
 
             // `finish` fires when the response is flushed. `close` covers the
             // client hanging up mid-response, which `finish` misses — those
@@ -155,6 +154,9 @@ function createRequestLogger(logger, options) {
                     || statusCode >= 400
                     || durationMs >= ALWAYS_LOG_SLOWER_THAN_MS;
 
+                // Healthy probes are noise. Failed, aborted, or slow requests
+                // on those paths remain audit-visible.
+                if (isIgnoredPath && !mustLog) return;
                 if (!mustLog && Math.random() >= sampleRate) return;
 
                 const context = {
@@ -194,9 +196,8 @@ function createRequestLogger(logger, options) {
 /**
  * Generate a UUID v4.
  *
- * `crypto.randomUUID()` is Node 14.17+, and twelve services here still run
- * Node 11, so it is used when present and hand-rolled from `randomBytes`
- * otherwise. Both paths use the same CSPRNG; the fallback just formats it.
+ * Uses the runtime UUID implementation, with a CSPRNG formatting fallback for
+ * compatible alternate runtimes.
  */
 function newCorrelationId() {
     if (typeof crypto.randomUUID === 'function') return crypto.randomUUID();
@@ -209,8 +210,8 @@ function newCorrelationId() {
         + '-' + h.slice(16, 20) + '-' + h.slice(20);
 }
 
-/** UUID v4, or the same shape we issue. Anything else is discarded. */
-const CORRELATION_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/** UUID v4, matching the identifiers issued by this package. */
+const CORRELATION_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function isValidCorrelationId(value) {
     return typeof value === 'string' && CORRELATION_PATTERN.test(value);

@@ -1,7 +1,5 @@
-function constructFilters(){
+const { constructFilters } = require('./readroute')
 
-}
-
-module.export = {
+module.exports = {
     constructFilters
 }
