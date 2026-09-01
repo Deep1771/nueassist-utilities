@@ -1,6 +1,6 @@
 function isNJAdmin(user=null){
     if(user){
-        let {role} = user.sys_entityAttributes || null
+        let {role} = user.sys_entityAttributes || {}
         if(role && role.toUpperCase() === 'ASSETGOV-ADMIN'){
             return true
         }else{
@@ -13,7 +13,7 @@ function isNJAdmin(user=null){
 
 function isSuperAdmin(user=null){
     if(user){
-        let {superAdmin} = user.sys_entityAttributes || null
+        let {superAdmin} = user.sys_entityAttributes || {}
         if(superAdmin){
             return true
         }
@@ -27,7 +27,7 @@ function isSuperAdmin(user=null){
 
 function getUserAgency(user){
     if(!isNJAdmin(user)){
-        let {agencyuser} = user.sys_entityAttributes || null
+        let {agencyuser} = (user && user.sys_entityAttributes) || {}
         if(agencyuser){
             return agencyuser
         }else return false
@@ -36,7 +36,7 @@ function getUserAgency(user){
 
 function getUserRole(user){
     if(!isNJAdmin(user) && !isSuperAdmin(user)){
-        let {roleName} = user.sys_entityAttributes
+        let {roleName} = (user && user.sys_entityAttributes) || {}
         if(roleName){
             return roleName
         }else return false

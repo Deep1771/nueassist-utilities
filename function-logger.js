@@ -235,11 +235,56 @@ function errorBoundary(logger, options) {
  * the worst category of bug to have on a system whose logs are its audit
  * trail.
  *
- * The process is NOT killed here. Deciding whether an uncaught exception is
- * fatal is the service's call, not this library's.
+ * Uncaught exceptions terminate the process after the log is written. Continuing
+ * after an uncaught exception can leave application state corrupted. A service
+ * with a proven recovery strategy may explicitly pass
+ * `{ exitOnUncaughtException: false }`.
  */
-function installProcessHandlers(logger) {
-    process.on('unhandledRejection', function (reason) {
+
+/**
+ * How long to wait for buffered stdout to reach the OS before exiting anyway.
+ * Override with LOG_EXIT_FLUSH_TIMEOUT_MS.
+ */
+const EXIT_FLUSH_TIMEOUT_MS = Number(process.env.LOG_EXIT_FLUSH_TIMEOUT_MS || 1000);
+
+/**
+ * Exit once stdout has drained.
+ *
+ * `process.exit()` discards whatever is still queued on stdout, and stdout is a
+ * pipe in every container this runs in — writes there are asynchronous. Calling
+ * it straight from the uncaughtException handler therefore throws away the crash
+ * log it exists to guarantee, plus every other line still in the buffer. On a
+ * system whose logs are its audit trail that is the opposite of the intent.
+ *
+ * Ordering on a stream is FIFO, so a callback on a final empty write fires only
+ * after the preceding lines have been handed off. The timer is the backstop for
+ * a pipe with no reader: a crashed process must still die, so it cannot be left
+ * waiting on a drain that will never come.
+ */
+function exitAfterFlush(code) {
+    let exited = false;
+
+    function exitNow() {
+        if (exited) return;
+        exited = true;
+        process.exit(code);
+    }
+
+    const deadline = setTimeout(exitNow, EXIT_FLUSH_TIMEOUT_MS);
+    if (typeof deadline.unref === 'function') deadline.unref();
+
+    try {
+        process.stdout.write('', exitNow);
+    } catch (e) {
+        exitNow();
+    }
+}
+
+function installProcessHandlers(logger, options) {
+    const opts = options || {};
+    const exitOnUncaughtException = opts.exitOnUncaughtException !== false;
+
+    function handleUnhandledRejection(reason) {
         if (alreadyLogged(reason)) return;
         markLogged(reason);
         const context = { reason: 'unhandledRejection' };
@@ -248,18 +293,29 @@ function installProcessHandlers(logger) {
             if (serialized[key] !== undefined) context[key] = serialized[key];
         }
         logger.error('Unhandled promise rejection', context);
-    });
+    }
 
-    process.on('uncaughtException', function (err) {
-        if (alreadyLogged(err)) return;
-        markLogged(err);
-        const context = { reason: 'uncaughtException' };
-        const serialized = logger.serializeError(err);
-        for (const key in serialized) {
-            if (serialized[key] !== undefined) context[key] = serialized[key];
+    function handleUncaughtException(err) {
+        if (!alreadyLogged(err)) {
+            markLogged(err);
+            const context = { reason: 'uncaughtException' };
+            const serialized = logger.serializeError(err);
+            for (const key in serialized) {
+                if (serialized[key] !== undefined) context[key] = serialized[key];
+            }
+            logger.error('Uncaught exception', context);
         }
-        logger.error('Uncaught exception', context);
-    });
+
+        if (exitOnUncaughtException) exitAfterFlush(1);
+    }
+
+    process.on('unhandledRejection', handleUnhandledRejection);
+    process.on('uncaughtException', handleUncaughtException);
+
+    return function removeProcessHandlers() {
+        process.removeListener('unhandledRejection', handleUnhandledRejection);
+        process.removeListener('uncaughtException', handleUncaughtException);
+    };
 }
 
 module.exports = {

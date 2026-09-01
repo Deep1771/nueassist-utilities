@@ -1,4 +1,24 @@
 const axios = require("axios");
+const net = require("net");
+
+const IP_GEOLOCATION_BASE_URL = process.env.IP_GEOLOCATION_BASE_URL;
+const IP_GEOLOCATION_FIELDS = "status,message,continent,continentCode,country,countryCode,region,regionName,city,district,zip,lat,lon,timezone,offset,currency,isp,org,as,asname,reverse,mobile,proxy,hosting,query";
+
+// External lookup is disabled unless an approved HTTPS provider endpoint is
+// configured, for example an organization-controlled proxy ending in `/json`.
+
+const buildIpGeolocationUrl = (ipAddress) => {
+    if (!IP_GEOLOCATION_BASE_URL) return null;
+
+    let url = new URL(IP_GEOLOCATION_BASE_URL);
+    if (url.protocol !== "https:") {
+        throw new TypeError("IP_GEOLOCATION_BASE_URL must use HTTPS");
+    }
+
+    url.pathname = `${url.pathname.replace(/\/$/, "")}/${encodeURIComponent(ipAddress)}`;
+    url.searchParams.set("fields", IP_GEOLOCATION_FIELDS);
+    return url.toString();
+};
 
 const addSystemCompatibleAddress = (userSystemDetails) => {
     try {
@@ -12,9 +32,7 @@ const addSystemCompatibleAddress = (userSystemDetails) => {
             type: "Point",
             zip: userSystemDetails.zip,
         };
-    } catch (e) {
-        console.log("error in adding system compatible address ", e);
-    }
+    } catch (e) { return undefined; }
 };
 
 const getBrowserAndOSDetails = (browserDetails) => {
@@ -101,9 +119,7 @@ const getBrowserAndOSDetails = (browserDetails) => {
         }
 
         return [operatingSystem, browserName, fullVersion];
-    } catch (e) {
-        console.log("error in getting Browser and OS details ", e);
-    }
+    } catch (e) { return undefined; }
 };
 
 const getDeviceDetails = (userDeviceDetails) => {
@@ -125,9 +141,7 @@ const getDeviceDetails = (userDeviceDetails) => {
             deviceType,
             ...rest,
         };
-    } catch (e) {
-        console.log("error in getting device details ", e);
-    }
+    } catch (e) { return undefined; }
 
 }
 
@@ -138,26 +152,32 @@ const getUserSystemDetails = async (headers = {}) => {
         // IP Address details
         let ipAddress = jsonParser(headers["ip-address"]);
         let geoJSONLatLong = {};
-        if (ipAddress && Object.keys(ipAddress).length > 0) {
-            await axios
-                .get(
-                    `http://ip-api.com/json/${ipAddress.ip}?fields=status,message,continent,continentCode,country,countryCode,region,regionName,city,district,zip,lat,lon,timezone,offset,currency,isp,org,as,asname,reverse,mobile,proxy,hosting,query`
-                )
-                .then(function (response) {
+        if (ipAddress && net.isIP(ipAddress.ip)) {
+            let geolocationUrl = buildIpGeolocationUrl(ipAddress.ip);
+            if (geolocationUrl) {
+                try {
+                    let response = await axios.get(geolocationUrl, {
+                        timeout: 3000,
+                        maxContentLength: 128 * 1024,
+                        maxRedirects: 0,
+                        validateStatus: (status) => status >= 200 && status < 300,
+                    });
                     userSystemDetails = {
                         ...response.data,
                     };
-                })
-                .catch(function (error) {
-                    console.log("error in getting ipAddress details", error);
-                });
+                } catch (e) {
+                    userSystemDetails = {};
+                }
+            }
 
-            //Adding system compatible address
-            geoJSONLatLong = addSystemCompatibleAddress(userSystemDetails);
+            //Adding system compatible address only when the provider returned coordinates.
+            if (Number.isFinite(userSystemDetails.lon) && Number.isFinite(userSystemDetails.lat)) {
+                geoJSONLatLong = addSystemCompatibleAddress(userSystemDetails);
+            }
             userSystemDetails = {
                 ...userSystemDetails,
-                geoJSONLatLong,
-                ipAddress: userSystemDetails.query,
+                ...(Object.keys(geoJSONLatLong).length ? { geoJSONLatLong } : {}),
+                ipAddress: ipAddress.ip,
             };
         }
 
@@ -166,14 +186,15 @@ const getUserSystemDetails = async (headers = {}) => {
         let deviceDetails = jsonParser(headers["device-details"]);
         if (browserDetails && Object.keys(browserDetails).length > 0) {
             let details = getBrowserAndOSDetails(browserDetails);
-
-            userSystemDetails = {
-                ...userSystemDetails,
-                browserName: details[1],
-                browserVersion: details[2],
-                deviceOS: details[0],
-                platform: "webApplication",
-            };
+            if (details) {
+                userSystemDetails = {
+                    ...userSystemDetails,
+                    browserName: details[1],
+                    browserVersion: details[2],
+                    deviceOS: details[0],
+                    platform: "webApplication",
+                };
+            }
             delete userSystemDetails.status;
             delete userSystemDetails.query;
         } else if (deviceDetails && Object.keys(deviceDetails).length > 0) {
@@ -185,9 +206,7 @@ const getUserSystemDetails = async (headers = {}) => {
             }
         }
         return userSystemDetails;
-    } catch (e) {
-        console.log("error in getting UserSystemDetails ", e);
-    }
+    } catch (e) { return {}; }
 };
 
 const jsonParser = (str) => {
@@ -211,7 +230,6 @@ const jsonParser = (str) => {
     try {
         return JSON.parse(normalizedString);
     } catch (e) {
-        console.log("error in parsing json ", e);
         return null;
     }
 };

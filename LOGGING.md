@@ -6,6 +6,9 @@ how to use the module, not a restatement of the rules.
 
 **Zero dependencies.** No Winston. Do not add one.
 
+**Runtime:** Node.js 20.19 or newer. Older Node releases are unsupported and
+must be upgraded before consuming this package.
+
 ---
 
 ## Quick start
@@ -157,7 +160,9 @@ complete) so the throttle doesn't collapse them. Don't use it in a request path.
 - `morgan('combined')` — logs the query string. This is the biggest single PHI leak in the stack.
 - Winston file transports — pod-local files are ephemeral, unencrypted and unauditable.
 - Interpolate values into `message` — that's the one path around the allow-list. `message` is
-  a short static string; variable data goes in `context`.
+  a short static string; variable data goes in `context`. Common identifier patterns are
+  redacted as a final backstop, and the logging check rejects interpolated logger calls, but
+  neither mechanism can reliably identify a person's name in arbitrary prose.
 
 ```js
 logger.info(`Saved visit for ${patient.name}`);          // leaks, bypasses everything

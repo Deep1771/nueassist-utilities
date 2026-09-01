@@ -1,3 +1,9 @@
+function intersectPermissionValue(key, userValue, agencyValue) {
+    return key.toLowerCase().indexOf('disable') === 0
+      ? Boolean(userValue || agencyValue)
+      : Boolean(userValue && agencyValue);
+}
+
 function compareTree(userPermission,agencyPermission){
     let appArray = [];
     let userAccess = userPermission.apps && userPermission.apps.length;
@@ -63,7 +69,13 @@ function compareModuleTree(userModData, agencyModData){
       let userFlagKeys = Object.keys(userFlags);
       userFlagKeys.map(key => {
         let exists = agencyFlagKeys.some(k => k == key);
-        if (exists) accessObj[key] = agencyFlags[key];
+        if (exists) {
+          accessObj[key] = intersectPermissionValue(
+            key,
+            userFlags[key],
+            agencyFlags[key]
+          );
+        }
       });
       userModData.flags = accessObj
     }
@@ -102,10 +114,10 @@ function compareModuleTree(userModData, agencyModData){
       let agency = { ...agencyEntityData.access }
       let user = { ...userEntitydata.access }
   
-      let accessObj = Object.keys(agency)
-        .filter(key => key in user && agency[key] === user[key])
+      accessObj = Object.keys(agency)
+        .filter(key => key in user)
         .reduce((acc, key) => {
-          acc[key] = agency[key];
+          acc[key] = intersectPermissionValue(key, user[key], agency[key]);
           return acc;
         }, {});
       ['disableCreateOption'].forEach(key => {
@@ -121,7 +133,13 @@ function compareModuleTree(userModData, agencyModData){
         if (agencyFeatKeys.length && userFeatKeys.length) {
           userFeatKeys.map(key => {
             let exists = agencyFeatKeys.some(k => k == key);
-            if (exists) featObj[key] = true;
+            if (exists) {
+              featObj[key] = intersectPermissionValue(
+                key,
+                userEntitydata.featureAccess[key],
+                agencyEntityData.featureAccess[key]
+              );
+            }
           });
         }
         if (Object.keys(featObj).length) userEntitydata.featureAccess = featObj;
@@ -193,7 +211,13 @@ function compareFields(userPerm, agencyPerm){
       let userAccessKeys = Object.keys(userPerm.access);
       userAccessKeys.map(key => {
         let exists = agencyAccessKeys.some(k => k == key);
-        if (exists) accessObj[key] = true;
+        if (exists) {
+          accessObj[key] = intersectPermissionValue(
+            key,
+            userPerm.access[key],
+            agencyPerm.access[key]
+          );
+        }
       });
       userPerm.access = accessObj;
       return userPerm;

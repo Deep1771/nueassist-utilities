@@ -1,4 +1,8 @@
- export function constructGlobalSearchQuery({query=[],template,value,pageLayout}){
+function escapeRegex(value) {
+    return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+function constructGlobalSearchQuery({query=[],template,value,pageLayout}){
     let STRING_TYPES = ['TEXTBOX', 'TEXTAREA', 'EMAIL', 'LIST', 'SEQUENCE',
     'REFERENCE', 'DATE', 'DATETIME', 'DATERANGE', 'PAIREDLIST', 'PHONENUMBER','ORDER'
 ];
@@ -8,7 +12,7 @@ let globalQuery = {
     '$or': [],
 };
 
-if (pageLayout) {t
+if (pageLayout) {
     globalQuery = {
         ...globalQuery,
         "sys_templateName": pageLayout
@@ -34,7 +38,7 @@ STRING_TYPES.map(typeName => {
                         } else {
                             globalQuery['$or'].push({
                                 [`sys_entityAttributes.${refObjName}.${refFieldName}`]: {
-                                    '$regex': `.*${value}.*`,
+                                    '$regex': escapeRegex(value),
                                     '$options': 'i'
                                 }
                             })
@@ -47,7 +51,7 @@ STRING_TYPES.map(typeName => {
                         } else {
                             globalQuery['$or'].push({
                                 [`sys_entityAttributes.${fieldDef.name}.${refDef.name}`]: {
-                                    '$regex': `.*${value}.*`,
+                                    '$regex': escapeRegex(value),
                                     '$options': 'i'
                                 }
                             })
@@ -59,7 +63,7 @@ STRING_TYPES.map(typeName => {
                 ['startDate', 'endDate'].map(e => {
                     globalQuery['$or'].push({
                         [`sys_entityAttributes.${fieldDef.name}.${e}`]: {
-                            '$regex': `.*${value}.*`,
+                            '$regex': escapeRegex(value),
                             '$options': 'i'
                         }
                     })
@@ -71,7 +75,7 @@ STRING_TYPES.map(typeName => {
                 arr.map(e => {
                     globalQuery['$or'].push({
                         [`sys_entityAttributes.${fieldDef.name}.${e}.id`]: {
-                            '$regex': `.*${value}.*`,
+                            '$regex': escapeRegex(value),
                             '$options': 'i'
                         }
                     })
@@ -79,7 +83,7 @@ STRING_TYPES.map(typeName => {
             } else if (fieldDef.type === 'PHONENUMBER') {
                 globalQuery['$or'].push({
                     [`sys_entityAttributes.${fieldDef.name}.phoneNumber`]: {
-                        '$regex': `.*${value}.*`,
+                        '$regex': escapeRegex(value),
                         '$options': 'i'
                     }
                 })
@@ -88,7 +92,7 @@ STRING_TYPES.map(typeName => {
                     fieldDef.fields.map(orderfield=>{
                         globalQuery['$or'].push({
                             [`sys_entityAttributes.${fieldDef.name}.${orderfield.name}`]:{
-                                '$regex': `.*${value}`,
+                                '$regex': escapeRegex(value),
                                 '$options': 'i'
                             }
                         })
@@ -98,7 +102,7 @@ STRING_TYPES.map(typeName => {
             else {
                 globalQuery['$or'].push({
                     [`sys_entityAttributes.${fieldDef.name}`]: {
-                        '$regex': `.*${value}.*`,
+                        '$regex': escapeRegex(value),
                         '$options': 'i'
                     }
                 })
