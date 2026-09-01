@@ -1,6 +1,6 @@
 {
   "name": "nueassist-utilities",
-  "version": "3.0.0",
+  "version": "3.1.0",
   "description": "Shared query-building, permission, and structured-logging utilities for NueAssist services",
   "keywords": [
     "mongodb",
@@ -16,13 +16,15 @@
     "globalsearch.js",
     "legacy-logger.js",
     "logger.js",
+    "mailer.js",
     "permission.js",
     "readroute.js",
     "request-logger.js",
     "security.js",
     "user-stats.js",
     "user.js",
-    "LOGGING.md"
+    "LOGGING.md",
+    "MAILER.md"
   ],
   "scripts": {
     "check:logging": "node scripts/check-logging.js",
